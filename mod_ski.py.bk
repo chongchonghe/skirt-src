@@ -1,0 +1,104 @@
+#!/usr/bin/env python
+"""mod_ski.py
+Modify .ski file and (may) run skirt using the python package pts.
+
+"""
+
+import os, sys
+import logging
+import matplotlib as mpl
+import pts.simulation as sm
+# import pts.utils as ut
+import pts.visual as vis
+import pts.do
+import f90nml
+from astropy import units
+
+pts.do.initializePTS()
+mpl.use('Agg')
+mpl.rcParams['figure.dpi'] = 300
+
+
+def main(nph, lmax, fn_par, fn_nml, fov, fn_ski, feature="main_CK"):
+    """
+    nph (float): number of photons
+    lmax (int or str): l_max used to determine the spacial resoltuion of the
+        instrument
+    fn_par (str): particle file name
+    fov (float): field of view, in pc
+    fn_ski (str): the ski file based on which we create the new ski file
+    feature (str): name of the output .ski file. The final ski filename will be
+        {feature}_#ph.ski where # is n_photon.
+
+    """
+
+    #nph = 3e6
+    #lmax = 11   # lmax used in amr2grid.f90 for H-alpha
+    #fn_par = "part_sam_222_out29_BB"
+
+    lmax = int(lmax)
+    fov = float(fov)
+    if isinstance(nph, str):
+        pre = "{}_{}ph".format(feature, nph)
+    else:
+        pre = "{}_{:1.0e}ph".format(feature, nph).replace("e+0", "e")
+    skifn = pre + ".ski"
+    is_mod = True
+    if os.path.isfile(skifn):
+        if os.path.getmtime(skifn) > os.path.getmtime(fn_ski):
+            is_mod = False
+    if is_mod:
+        ski = sm.SkiFile(fn_ski)
+        ski.setNumPrimaryPackets(nph)
+        ski.setStringAttribute(
+            "MonteCarloSimulation/sourceSystem/SourceSystem/sources/ParticleSource",
+            "filename", fn_par)
+        ski.setStringAttribute(
+            "MonteCarloSimulation/instrumentSystem/InstrumentSystem/instruments/FullInstrument",
+            "instrumentName", "sedsb")
+        # set SED to CK
+        # did by hand
+        # calculate ny and ny
+        nml = f90nml.read(fn_nml)
+        side = float(nml["PARAMS"]["xmax"]) - float(nml["PARAMS"]["xmin"])
+        nx = int(side * 2**lmax)
+        ny = nx
+        ski.setIntAttribute(
+            "MonteCarloSimulation/instrumentSystem/InstrumentSystem/instruments/FullInstrument",
+            "numPixelsX", nx)
+        ski.setIntAttribute(
+            "MonteCarloSimulation/instrumentSystem/InstrumentSystem/instruments/FullInstrument",
+            "numPixelsY", ny)
+        ski.setQuantityAttribute(
+            "MonteCarloSimulation/instrumentSystem/InstrumentSystem/instruments/FullInstrument",
+            "fieldOfViewX", fov * units.pc, skirtUnit='pc')
+        ski.setQuantityAttribute(
+            "MonteCarloSimulation/instrumentSystem/InstrumentSystem/instruments/FullInstrument",
+            "fieldOfViewY", fov * units.pc, skirtUnit='pc')
+        ski.saveTo(skifn)
+        logging.info("Set nx = ny = {}".format(ny))
+        logging.info("Saved " + skifn)
+
+    is_run = is_mod
+    if not is_mod and not os.path.isfile(pre + "_parameters.xml"):
+        is_run = True
+    print("is_run =", is_run)
+    if is_run:
+        # perform the simulation
+        logging.info("Executing " + skifn)
+        skirt = sm.Skirt(path="/n/startrek/chongchong/SKIRT2/release/SKIRT/main/skirt")
+        simulation = skirt.execute(pre, console='regular',)
+    else:
+        # if the simulation has already been performed, use this instead
+        simulation = sm.createSimulation(prefix=pre)
+
+    # plot the SED
+    micron = sm.unit("micron")
+    vis.plotSeds(simulation, #minWavelength=0.1*micron, maxWavelength=1000*micron,
+                 decades=4, figSize=(7, 4.5), outFileName=f"{pre}_sed.png", )
+
+
+
+if __name__ == "__main__":
+
+    main(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
